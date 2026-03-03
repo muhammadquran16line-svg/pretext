@@ -12,6 +12,9 @@ export type HarfBuzzFont = { readonly _tag: 'font' }
 export type HarfBuzzBuffer = {
   addText(text: string): void
   guessSegmentProperties(): void
+  setDirection(dir: string): void
+  setScript(script: string): void
+  setLanguage(lang: string): void
   json(): { ax: number }[]
   destroy(): void
 }

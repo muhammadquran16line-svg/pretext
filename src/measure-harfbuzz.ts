@@ -29,7 +29,11 @@ export function measureText(text: string, fontName: string, fontSize: number): n
 
   const buf = hb.createBuffer()
   buf.addText(text)
-  buf.guessSegmentProperties()
+  // Use explicit LTR direction. guessSegmentProperties() assigns RTL to
+  // isolated Arabic words, changing their advance widths vs when measured
+  // as part of a mixed-direction string. LTR gives consistent widths that
+  // match browser canvas measureText behavior.
+  buf.setDirection('ltr')
   hb.shape(entry.font, buf)
   const glyphs = buf.json() as { ax: number }[]
   const scale = fontSize / entry.face.upem
