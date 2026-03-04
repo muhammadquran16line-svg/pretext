@@ -23,12 +23,15 @@
   table {
     border-collapse: collapse; font-size: 13px;
     font-family: "SF Mono", monospace; margin-bottom: 16px;
+    width: 100%; table-layout: fixed;
   }
-  th { text-align: left; padding: 4px 12px; color: #666; border-bottom: 1px solid #333; }
-  td { padding: 4px 12px; border-bottom: 1px solid #1a1a1a; }
+  col.num { width: 80px; }
+  col.text { }
+  th { text-align: left; padding: 4px 12px; color: #666; border-bottom: 1px solid #333; white-space: nowrap; }
+  td { padding: 4px 12px; border-bottom: 1px solid #1a1a1a; white-space: nowrap; }
   .over td { color: #ef9a9a; }
   .under td { color: #ffcc80; }
-  .text { color: #888; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .text { color: #888; white-space: normal; word-break: break-all; }
   .perfect { color: #81c784; font-size: 18px; margin-top: 24px; }
 </style>
 </head>

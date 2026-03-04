@@ -70,6 +70,7 @@ type Mismatch = {
   predicted: number
   diff: number
   text: string
+  diagnostic?: string
 }
 
 function runSweep(): { total: number, mismatches: Mismatch[] } {
@@ -108,6 +109,72 @@ function runSweep(): { total: number, mismatches: Mismatch[] } {
           const predicted = layout(prepared[i]!, maxWidth).height
           total++
           if (Math.abs(actual - predicted) >= 1) {
+            // Diagnose: detect where the browser actually breaks lines
+            // by wrapping each word in a span and comparing offsetTop
+            const diagDiv = document.createElement('div')
+            diagDiv.style.font = font
+            diagDiv.style.lineHeight = `${lineHeight}px`
+            diagDiv.style.width = `${maxWidth}px`
+            diagDiv.style.wordWrap = 'break-word'
+            diagDiv.style.overflowWrap = 'break-word'
+
+            const normalized = TEXTS[i]!.replace(/\n/g, ' ')
+            const segmenter = new Intl.Segmenter(undefined, { granularity: 'word' })
+            const segs = [...segmenter.segment(normalized)]
+            for (const seg of segs) {
+              const span = document.createElement('span')
+              span.textContent = seg.segment
+              diagDiv.appendChild(span)
+            }
+            container.appendChild(diagDiv)
+
+            // Read offsetTops to detect browser line breaks
+            const spans = diagDiv.querySelectorAll('span')
+            const browserLines: string[] = []
+            let currentLine = ''
+            let lastTop = -1
+            for (let si = 0; si < spans.length; si++) {
+              const top = spans[si]!.offsetTop
+              if (lastTop >= 0 && top > lastTop) {
+                browserLines.push(currentLine)
+                currentLine = spans[si]!.textContent ?? ''
+              } else {
+                currentLine += spans[si]!.textContent ?? ''
+              }
+              lastTop = top
+            }
+            if (currentLine) browserLines.push(currentLine)
+            container.removeChild(diagDiv)
+
+            // Build our algorithm's lines for comparison
+            const diagCtx = (new OffscreenCanvas(1,1)).getContext('2d')!
+            diagCtx.font = font
+            let diagLine = ''
+            const ourLines: string[] = []
+            for (const seg of segs) {
+              const candidate = diagLine + seg.segment
+              if (diagLine && diagCtx.measureText(candidate).width > maxWidth && (seg.isWordLike ?? false)) {
+                ourLines.push(diagLine)
+                diagLine = seg.segment
+              } else {
+                diagLine = candidate
+              }
+            }
+            if (diagLine) ourLines.push(diagLine)
+
+            const lineDetails: string[] = []
+            const maxLines = Math.max(browserLines.length, ourLines.length)
+            for (let li = 0; li < maxLines; li++) {
+              const ours = (ourLines[li] ?? '').trimEnd()
+              const theirs = (browserLines[li] ?? '').trimEnd()
+              if (ours !== theirs) {
+                lineDetails.push(`L${li+1} ours="${ours.slice(0,40)}" browser="${theirs.slice(0,40)}"`)
+              }
+            }
+            if (lineDetails.length === 0 && browserLines.length !== ourLines.length) {
+              lineDetails.push(`ours=${ourLines.length}L browser=${browserLines.length}L (same content, different count?)`)
+            }
+
             mismatches.push({
               font: fontFamily,
               fontSize,
@@ -116,6 +183,7 @@ function runSweep(): { total: number, mismatches: Mismatch[] } {
               predicted,
               diff: predicted - actual,
               text: TEXTS[i]!,
+              diagnostic: lineDetails.length > 0 ? lineDetails.join(' | ') : 'no per-line canvas/DOM diff found',
             })
           }
         }
@@ -171,10 +239,10 @@ function render() {
 
       for (const [size, sizeMs] of bySize) {
         html += `<h3>${size}px (${sizeMs.length} mismatches)</h3>`
-        html += '<table><tr><th>Width</th><th>Actual</th><th>Predicted</th><th>Diff</th><th>Text</th></tr>'
+        html += '<table><colgroup><col class="num"><col class="num"><col class="num"><col class="num"><col class="text"></colgroup><tr><th>Width</th><th>Actual</th><th>Predicted</th><th>Diff</th><th>Text</th></tr>'
         for (const m of sizeMs) {
           const cls = m.diff > 0 ? 'over' : 'under'
-          const snippet = m.text.length > 50 ? m.text.slice(0, 50) + '...' : m.text
+          const snippet = m.text
           html += `<tr class="${cls}">
             <td>${m.width}px</td>
             <td>${m.actual}px</td>
@@ -182,6 +250,9 @@ function render() {
             <td>${m.diff > 0 ? '+' : ''}${m.diff}px</td>
             <td class="text">${escapeHtml(snippet)}</td>
           </tr>`
+          if (m.diagnostic) {
+            html += `<tr class="${cls}"><td colspan="5" class="text" style="color:#888;font-size:11px;padding-left:24px">${escapeHtml(m.diagnostic)}</td></tr>`
+          }
         }
         html += '</table>'
       }

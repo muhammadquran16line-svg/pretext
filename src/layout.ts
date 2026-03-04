@@ -382,7 +382,12 @@ export function layout(prepared: PreparedText, maxWidth: number, lineHeight?: nu
     const data = paraData[p]!
 
     const { widths, isWordLike: isWord, isSpace: isSp, segLevels, breakableWidths } = data
+    // lineW tracks width excluding trailing whitespace (CSS behavior: trailing
+    // spaces hang past the line edge and don't count for break decisions).
+    // trailingSpaceW tracks accumulated trailing space width to add back when
+    // a non-space segment follows.
     let lineW = 0
+    let trailingSpaceW = 0
     let hasContent = false
     let lineStart = 0
     let lastWordIdx = -1
@@ -406,8 +411,10 @@ export function layout(prepared: PreparedText, maxWidth: number, lineHeight?: nu
           hasContent = true
           lineStart = i
           lastWordIdx = -1
+          trailingSpaceW = 0
         } else {
-          lineW = w
+          lineW = isSp[i] ? 0 : w
+          trailingSpaceW = isSp[i] ? w : 0
           hasContent = true
           lineCount++
           lineStart = i
@@ -416,18 +423,24 @@ export function layout(prepared: PreparedText, maxWidth: number, lineHeight?: nu
         continue
       }
 
-      const newW = lineW + w
+      if (isSp[i]) {
+        // Space: accumulate as trailing space, don't add to lineW yet
+        trailingSpaceW += w
+        continue
+      }
+
+      // Non-space segment: include accumulated trailing spaces + this segment
+      const newW = lineW + trailingSpaceW + w
 
       if (newW > maxWidth) {
         let breakIdx: number
         if (isWord[i]) {
           breakIdx = i
-        } else if (isSp[i]) {
-          continue
         } else if (lastWordIdx > lineStart) {
           breakIdx = lastWordIdx
         } else {
           lineW = newW
+          trailingSpaceW = 0
           continue
         }
 
@@ -438,17 +451,22 @@ export function layout(prepared: PreparedText, maxWidth: number, lineHeight?: nu
         lineStart = breakIdx
         lineCount++
         lineW = 0
+        trailingSpaceW = 0
         lastWordIdx = -1
         for (let j = breakIdx; j <= i; j++) {
-          lineW += widths[j]!
-          if (isWord[j]) {
-            lastWordIdx = j
+          if (isSp[j]) {
+            trailingSpaceW += widths[j]!
+          } else {
+            lineW += trailingSpaceW + widths[j]!
+            trailingSpaceW = 0
+            if (isWord[j]) lastWordIdx = j
           }
         }
 
         if (breakIdx === i && w > maxWidth && breakableWidths[i] !== null) {
           const gWidths = breakableWidths[i]!
           lineW = 0
+          trailingSpaceW = 0
           lineCount--
           for (let g = 0; g < gWidths.length; g++) {
             if (lineW > 0 && lineW + gWidths[g]! > maxWidth) {
@@ -462,6 +480,7 @@ export function layout(prepared: PreparedText, maxWidth: number, lineHeight?: nu
         }
       } else {
         lineW = newW
+        trailingSpaceW = 0
         if (isWord[i]) {
           lastWordIdx = i
         }
