@@ -2,33 +2,34 @@ import { layoutNextLine, layoutWithLines, prepareWithSegments, type LayoutCursor
 import { BODY_COPY } from './logo-columns-text.ts'
 import openaiLogoUrl from './assets/openai-symbol.svg'
 import claudeLogoUrl from './assets/claude-symbol.svg'
+import {
+  getPolygonIntervalForBand,
+  getRectIntervalsForBand,
+  getWrapHull,
+  isPointInPolygon,
+  subtractIntervals,
+  transformWrapPoints,
+  type Interval,
+  type Point,
+  type Rect,
+} from './wrap-geometry.ts'
 
 const BODY_FONT = '16px "Helvetica Neue", Helvetica, Arial, sans-serif'
 const BODY_LINE_HEIGHT = 25
 const CREDIT_LINE_HEIGHT = 16
-const HEADLINE_TEXT = '2 SITUATIONAL AWARENESS: THE DECADE AHEAD'
+const HEADLINE_TEXT = 'SITUATIONAL AWARENESS: THE DECADE AHEAD'
 const HEADLINE_FONT_FAMILY = '"Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, serif'
 const OPENAI_LOGO_SRC = openaiLogoUrl
 const CLAUDE_LOGO_SRC = claudeLogoUrl
-
-type Rect = {
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-type Interval = {
-  left: number
-  right: number
-}
-
-type Point = {
-  x: number
-  y: number
-}
+const HEADLINE_WORDS = HEADLINE_TEXT.split(/\s+/)
 
 type LogoKind = 'openai' | 'claude'
+type SpinState = {
+  from: number
+  to: number
+  start: number
+  duration: number
+}
 
 type PositionedLine = {
   x: number
@@ -36,19 +37,38 @@ type PositionedLine = {
   text: string
 }
 
-type BandObstacle = {
-  getIntervals: (bandTop: number, bandBottom: number) => Interval[]
+type BandObstacle =
+  | {
+      kind: 'polygon'
+      points: Point[]
+      horizontalPadding: number
+      verticalPadding: number
+    }
+  | {
+      kind: 'rects'
+      rects: Rect[]
+      horizontalPadding: number
+      verticalPadding: number
+    }
+
+type PageLayout = {
+  gutter: number
+  headlineTop: number
+  headlineWidth: number
+  headlineFont: string
+  headlineLineHeight: number
+  headlineLines: LayoutLine[]
+  headlineRects: Rect[]
+  creditTop: number
+  leftRegion: Rect
+  rightRegion: Rect
+  openaiRect: Rect
+  claudeRect: Rect
 }
 
-type WrapHullMode = 'mean' | 'envelope'
-
-type WrapHullOptions = {
-  smoothRadius: number
-  mode: WrapHullMode
-  convexify?: boolean
-}
-
-const stage = document.getElementById('stage') as HTMLDivElement
+const stageNode = document.getElementById('stage')
+if (!(stageNode instanceof HTMLDivElement)) throw new Error('#stage not found')
+const stage = stageNode
 
 type DomCache = {
   headline: HTMLHeadingElement // cache lifetime: page
@@ -60,24 +80,13 @@ type DomCache = {
 }
 
 const preparedByKey = new Map<string, PreparedTextWithSegments>()
-const wrapHullByKey = new Map<string, Promise<Point[]>>()
 const scheduled = { value: false }
 let currentLogoHits: { openai: Point[], claude: Point[] } | null = null
 let hoveredLogo: LogoKind | null = null
 let openaiAngle = 0
 let claudeAngle = 0
-let openaiSpin: {
-  from: number
-  to: number
-  start: number
-  duration: number
-} | null = null
-let claudeSpin: {
-  from: number
-  to: number
-  start: number
-  duration: number
-} | null = null
+let openaiSpin: SpinState | null = null
+let claudeSpin: SpinState | null = null
 
 const domCache: DomCache = {
   headline: createHeadline(),
@@ -135,290 +144,27 @@ function getPrepared(text: string, font: string): PreparedTextWithSegments {
   return prepared
 }
 
-async function makeWrapHull(src: string, options: WrapHullOptions): Promise<Point[]> {
-  const image = new Image()
-  image.src = src
-  await image.decode()
-
-  const maxDimension = 320
-  const aspect = image.naturalWidth / image.naturalHeight
-  const width = aspect >= 1
-    ? maxDimension
-    : Math.max(64, Math.round(maxDimension * aspect))
-  const height = aspect >= 1
-    ? Math.max(64, Math.round(maxDimension / aspect))
-    : maxDimension
-
-  const canvas = new OffscreenCanvas(width, height)
-  const ctx = canvas.getContext('2d')
-  if (ctx === null) throw new Error('2d context unavailable')
-
-  ctx.clearRect(0, 0, width, height)
-  ctx.drawImage(image, 0, 0, width, height)
-
-  const { data } = ctx.getImageData(0, 0, width, height)
-  const lefts: Array<number | null> = new Array(height).fill(null)
-  const rights: Array<number | null> = new Array(height).fill(null)
-  const alphaThreshold = 12
-
-  for (let y = 0; y < height; y++) {
-    let left = -1
-    let right = -1
-    for (let x = 0; x < width; x++) {
-      const alpha = data[(y * width + x) * 4 + 3]!
-      if (alpha < alphaThreshold) continue
-      if (left === -1) left = x
-      right = x
+function getObstacleIntervals(obstacle: BandObstacle, bandTop: number, bandBottom: number): Interval[] {
+  switch (obstacle.kind) {
+    case 'polygon': {
+      const interval = getPolygonIntervalForBand(
+        obstacle.points,
+        bandTop,
+        bandBottom,
+        obstacle.horizontalPadding,
+        obstacle.verticalPadding,
+      )
+      return interval === null ? [] : [interval]
     }
-    if (left !== -1 && right !== -1) {
-      lefts[y] = left
-      rights[y] = right + 1
-    }
+    case 'rects':
+      return getRectIntervalsForBand(
+        obstacle.rects,
+        bandTop,
+        bandBottom,
+        obstacle.horizontalPadding,
+        obstacle.verticalPadding,
+      )
   }
-
-  const validRows: number[] = []
-  for (let y = 0; y < height; y++) {
-    if (lefts[y] !== null && rights[y] !== null) validRows.push(y)
-  }
-  if (validRows.length === 0) throw new Error(`No opaque pixels found in ${src}`)
-
-  let boundLeft = Infinity
-  let boundRight = -Infinity
-  const boundTop = validRows[0]!
-  const boundBottom = validRows[validRows.length - 1]!
-  for (const y of validRows) {
-    const left = lefts[y]!
-    const right = rights[y]!
-    if (left < boundLeft) boundLeft = left
-    if (right > boundRight) boundRight = right
-  }
-  const boundWidth = Math.max(1, boundRight - boundLeft)
-  const boundHeight = Math.max(1, boundBottom - boundTop)
-
-  const { smoothRadius, mode } = options
-  const smoothedLefts: number[] = new Array(height).fill(0)
-  const smoothedRights: number[] = new Array(height).fill(0)
-
-  for (const y of validRows) {
-    let leftSum = 0
-    let rightSum = 0
-    let count = 0
-    let leftEdge = Infinity
-    let rightEdge = -Infinity
-    for (let offset = -smoothRadius; offset <= smoothRadius; offset++) {
-      const sampleIndex = y + offset
-      if (sampleIndex < 0 || sampleIndex >= height) continue
-      const left = lefts[sampleIndex]
-      const right = rights[sampleIndex]
-      if (left == null || right == null) continue
-      leftSum += left
-      rightSum += right
-      if (left < leftEdge) leftEdge = left
-      if (right > rightEdge) rightEdge = right
-      count++
-    }
-
-    if (count === 0) {
-      smoothedLefts[y] = 0
-      smoothedRights[y] = width
-      continue
-    }
-
-    if (mode === 'envelope') {
-      smoothedLefts[y] = leftEdge
-      smoothedRights[y] = rightEdge
-    } else {
-      smoothedLefts[y] = leftSum / count
-      smoothedRights[y] = rightSum / count
-    }
-  }
-
-  const step = Math.max(1, Math.floor(validRows.length / 52))
-  const sampledRows: number[] = []
-  for (let index = 0; index < validRows.length; index += step) {
-    sampledRows.push(validRows[index]!)
-  }
-  const lastRow = validRows[validRows.length - 1]!
-  if (sampledRows[sampledRows.length - 1] !== lastRow) sampledRows.push(lastRow)
-
-  const points: Point[] = []
-  for (const y of sampledRows) {
-    points.push({
-      x: (smoothedLefts[y]! - boundLeft) / boundWidth,
-      y: ((y + 0.5) - boundTop) / boundHeight,
-    })
-  }
-  for (let index = sampledRows.length - 1; index >= 0; index--) {
-    const y = sampledRows[index]!
-    points.push({
-      x: (smoothedRights[y]! - boundLeft) / boundWidth,
-      y: ((y + 0.5) - boundTop) / boundHeight,
-    })
-  }
-
-  if (!options.convexify) return points
-  return makeConvexHull(points)
-}
-
-function getWrapHull(src: string, options: WrapHullOptions): Promise<Point[]> {
-  const key = `${src}::${options.mode}::${options.smoothRadius}::${options.convexify ? 'convex' : 'raw'}`
-  const cached = wrapHullByKey.get(key)
-  if (cached !== undefined) return cached
-  const promise = makeWrapHull(src, options)
-  wrapHullByKey.set(key, promise)
-  return promise
-}
-
-function cross(origin: Point, a: Point, b: Point): number {
-  return (a.x - origin.x) * (b.y - origin.y) - (a.y - origin.y) * (b.x - origin.x)
-}
-
-function makeConvexHull(points: Point[]): Point[] {
-  if (points.length <= 3) return points
-  const sorted = [...points].sort((a, b) => (a.x - b.x) || (a.y - b.y))
-  const lower: Point[] = []
-  for (const point of sorted) {
-    while (lower.length >= 2 && cross(lower[lower.length - 2]!, lower[lower.length - 1]!, point) <= 0) {
-      lower.pop()
-    }
-    lower.push(point)
-  }
-  const upper: Point[] = []
-  for (let index = sorted.length - 1; index >= 0; index--) {
-    const point = sorted[index]!
-    while (upper.length >= 2 && cross(upper[upper.length - 2]!, upper[upper.length - 1]!, point) <= 0) {
-      upper.pop()
-    }
-    upper.push(point)
-  }
-  lower.pop()
-  upper.pop()
-  return lower.concat(upper)
-}
-
-function transformWrapPoints(points: Point[], rect: Rect, angle: number): Point[] {
-  if (angle === 0) {
-    return points.map(point => ({
-      x: rect.x + point.x * rect.width,
-      y: rect.y + point.y * rect.height,
-    }))
-  }
-
-  const centerX = rect.x + rect.width / 2
-  const centerY = rect.y + rect.height / 2
-  const cos = Math.cos(angle)
-  const sin = Math.sin(angle)
-
-  return points.map(point => {
-    const localX = (point.x - 0.5) * rect.width
-    const localY = (point.y - 0.5) * rect.height
-    return {
-      x: centerX + localX * cos - localY * sin,
-      y: centerY + localX * sin + localY * cos,
-    }
-  })
-}
-
-function isPointInPolygon(points: Point[], x: number, y: number): boolean {
-  let inside = false
-  for (let index = 0, prev = points.length - 1; index < points.length; prev = index++) {
-    const a = points[index]!
-    const b = points[prev]!
-    const intersects =
-      ((a.y > y) !== (b.y > y)) &&
-      (x < ((b.x - a.x) * (y - a.y)) / (b.y - a.y) + a.x)
-    if (intersects) inside = !inside
-  }
-  return inside
-}
-
-function getPolygonXsAtY(points: Point[], y: number): number[] {
-  const xs: number[] = []
-
-  for (let index = 0; index < points.length; index++) {
-    const start = points[index]!
-    const end = points[(index + 1) % points.length]!
-    if (start.y === end.y) continue
-
-    const minY = Math.min(start.y, end.y)
-    const maxY = Math.max(start.y, end.y)
-    if (y < minY || y >= maxY) continue
-
-    const t = (y - start.y) / (end.y - start.y)
-    xs.push(start.x + (end.x - start.x) * t)
-  }
-
-  return xs.sort((a, b) => a - b)
-}
-
-function getPolygonIntervalForBand(
-  points: Point[],
-  bandTop: number,
-  bandBottom: number,
-  horizontalPadding: number,
-  verticalPadding: number,
-): Interval | null {
-  const sampleTop = bandTop - verticalPadding
-  const sampleBottom = bandBottom + verticalPadding
-  const startY = Math.floor(sampleTop)
-  const endY = Math.ceil(sampleBottom)
-
-  let left = Infinity
-  let right = -Infinity
-
-  for (let y = startY; y <= endY; y++) {
-    const xs = getPolygonXsAtY(points, y + 0.5)
-    for (let index = 0; index + 1 < xs.length; index += 2) {
-      const runLeft = xs[index]!
-      const runRight = xs[index + 1]!
-      if (runLeft < left) left = runLeft
-      if (runRight > right) right = runRight
-    }
-  }
-
-  if (!Number.isFinite(left) || !Number.isFinite(right)) return null
-  return { left: left - horizontalPadding, right: right + horizontalPadding }
-}
-
-function getRectIntervalsForBand(
-  rects: Rect[],
-  bandTop: number,
-  bandBottom: number,
-  horizontalPadding: number,
-  verticalPadding: number,
-): Interval[] {
-  const intervals: Interval[] = []
-  for (const rect of rects) {
-    if (bandBottom <= rect.y - verticalPadding || bandTop >= rect.y + rect.height + verticalPadding) continue
-    intervals.push({
-      left: rect.x - horizontalPadding,
-      right: rect.x + rect.width + horizontalPadding,
-    })
-  }
-  return intervals
-}
-
-function subtractIntervals(base: Interval, intervals: Interval[]): Interval[] {
-  let slots: Interval[] = [base]
-
-  for (const interval of intervals) {
-    const next: Interval[] = []
-    for (const slot of slots) {
-      if (interval.right <= slot.left || interval.left >= slot.right) {
-        next.push(slot)
-        continue
-      }
-      if (interval.left > slot.left) {
-        next.push({ left: slot.left, right: interval.left })
-      }
-      if (interval.right < slot.right) {
-        next.push({ left: interval.right, right: slot.right })
-      }
-    }
-    slots = next
-  }
-
-  return slots.filter(slot => slot.right - slot.left >= 24)
 }
 
 function layoutColumn(
@@ -439,9 +185,7 @@ function layoutColumn(
     const bandTop = lineTop
     const bandBottom = lineTop + lineHeight
     const blocked: Interval[] = []
-    for (const obstacle of obstacles) {
-      blocked.push(...obstacle.getIntervals(bandTop, bandBottom))
-    }
+    for (const obstacle of obstacles) blocked.push(...getObstacleIntervals(obstacle, bandTop, bandBottom))
 
     const slots = subtractIntervals(
       { left: region.x, right: region.x + region.width },
@@ -477,12 +221,7 @@ function layoutColumn(
   return { lines, cursor }
 }
 
-function syncPool<T extends HTMLElement>(
-  pool: T[],
-  length: number,
-  create: () => T,
-  parent: HTMLElement = stage,
-): void {
+function syncPool<T extends HTMLElement>(pool: T[], length: number, create: () => T, parent: HTMLElement = stage): void {
   while (pool.length < length) {
     const element = create()
     pool.push(element)
@@ -524,7 +263,7 @@ function projectBodyLines(lines: PositionedLine[], className: string, font: stri
   return startIndex + lines.length
 }
 
-function projectStaticLayout(layout: ReturnType<typeof buildLayout>): void {
+function projectStaticLayout(layout: PageLayout): void {
   ensureMounted()
   stage.style.height = `${document.documentElement.clientHeight}px`
 
@@ -544,10 +283,10 @@ function projectStaticLayout(layout: ReturnType<typeof buildLayout>): void {
   domCache.headline.style.top = `${layout.headlineTop}px`
   domCache.headline.style.width = `${layout.headlineWidth}px`
   domCache.headline.style.height = `${layout.headlineLines.length * layout.headlineLineHeight}px`
-  domCache.headline.style.font = `700 ${layout.headlineFontSize}px ${HEADLINE_FONT_FAMILY}`
+  domCache.headline.style.font = layout.headlineFont
   domCache.headline.style.lineHeight = `${layout.headlineLineHeight}px`
   domCache.headline.style.letterSpacing = '0px'
-  projectHeadlineLines(layout.headlineLines, `700 ${layout.headlineFontSize}px ${HEADLINE_FONT_FAMILY}`, layout.headlineLineHeight)
+  projectHeadlineLines(layout.headlineLines, layout.headlineFont, layout.headlineLineHeight)
 
   domCache.credit.style.left = `${layout.gutter + 4}px`
   domCache.credit.style.top = `${layout.creditTop}px`
@@ -556,11 +295,11 @@ function projectStaticLayout(layout: ReturnType<typeof buildLayout>): void {
 
 function getPreparedSingleLineWidth(text: string, font: string, lineHeight: number): number {
   const result = layoutWithLines(getPrepared(text, font), 10_000, lineHeight)
-  return result.lines[0]?.width ?? 0
+  return result.lines[0]!.width
 }
 
 function titleLayoutKeepsWholeWords(lines: LayoutLine[]): boolean {
-  const words = new Set(HEADLINE_TEXT.split(/\s+/))
+  const words = new Set(HEADLINE_WORDS)
   for (const line of lines) {
     const tokens = line.text.split(' ').filter(Boolean)
     for (const token of tokens) {
@@ -575,7 +314,6 @@ function fitHeadlineFontSize(headlineWidth: number, pageWidth: number): number {
   let low = Math.max(22, pageWidth * 0.026)
   let high = maxSize
   let best = low
-  const words = HEADLINE_TEXT.split(/\s+/)
 
   for (let iteration = 0; iteration < 10; iteration++) {
     const size = (low + high) / 2
@@ -583,7 +321,7 @@ function fitHeadlineFontSize(headlineWidth: number, pageWidth: number): number {
     const font = `700 ${size}px ${HEADLINE_FONT_FAMILY}`
     let widestWord = 0
 
-    for (const word of words) {
+    for (const word of HEADLINE_WORDS) {
       const width = getPreparedSingleLineWidth(word, font, lineHeight)
       if (width > widestWord) widestWord = width
     }
@@ -660,20 +398,7 @@ function startLogoSpin(kind: LogoKind, direction: 1 | -1): void {
   scheduleRender()
 }
 
-function buildLayout(pageWidth: number, pageHeight: number, lineHeight: number): {
-  gutter: number
-  headlineTop: number
-  headlineWidth: number
-  headlineFontSize: number
-  headlineLineHeight: number
-  headlineLines: LayoutLine[]
-  headlineRects: Rect[]
-  creditTop: number
-  leftRegion: Rect
-  rightRegion: Rect
-  openaiRect: Rect
-  claudeRect: Rect
-} {
+function buildLayout(pageWidth: number, pageHeight: number, lineHeight: number): PageLayout {
   const gutter = Math.round(Math.max(52, pageWidth * 0.048))
   const centerGap = Math.round(Math.max(28, pageWidth * 0.025))
   const columnWidth = Math.round((pageWidth - gutter * 2 - centerGap) / 2)
@@ -684,7 +409,7 @@ function buildLayout(pageWidth: number, pageHeight: number, lineHeight: number):
   const headlineLineHeight = Math.round(headlineFontSize * 0.92)
   const headlineFont = `700 ${headlineFontSize}px ${HEADLINE_FONT_FAMILY}`
   const headlineResult = layoutWithLines(
-    prepareWithSegments(HEADLINE_TEXT, headlineFont),
+    getPrepared(HEADLINE_TEXT, headlineFont),
     headlineWidth,
     headlineLineHeight,
   )
@@ -699,13 +424,10 @@ function buildLayout(pageWidth: number, pageHeight: number, lineHeight: number):
   const creditGap = Math.round(Math.max(14, lineHeight * 0.6))
   const creditTop = headlineTop + headlineResult.height + creditGap
   const copyTop = creditTop + CREDIT_LINE_HEIGHT + Math.round(Math.max(20, lineHeight * 0.9))
-  const narrowLogoT = Math.max(0, Math.min(1, (960 - pageWidth) / 30))
-
-  const openaiTopLimit = copyTop + Math.round(lineHeight * 1.95)
-  const maxOpenaiSizeByHeight = Math.floor((pageHeight - gutter - openaiTopLimit) / 1.03)
-  const openaiWidthFactor = 0.198 + 0.04 * narrowLogoT
-  const openaiSize = Math.round(Math.max(148, Math.min(366, pageWidth * openaiWidthFactor, maxOpenaiSizeByHeight)))
-  const claudeSize = Math.round(Math.max(252, Math.min(428, pageWidth * 0.34, pageHeight * 0.42)))
+  const openaiShrinkT = Math.max(0, Math.min(1, (960 - pageWidth) / 260))
+  const OPENAI_SIZE = 400 - openaiShrinkT * 56
+  const openaiSize = Math.round(Math.min(OPENAI_SIZE, pageHeight * 0.43))
+  const claudeSize = Math.round(Math.max(276, Math.min(500, pageWidth * 0.355, pageHeight * 0.45)))
 
   const leftRegion: Rect = {
     x: gutter,
@@ -721,18 +443,16 @@ function buildLayout(pageWidth: number, pageHeight: number, lineHeight: number):
     height: pageHeight - headlineTop - gutter,
   }
 
-  const openaiBaseX = leftRegion.x - Math.round(openaiSize * 0.41)
-  const openaiInwardX = rightRegion.x - Math.round(openaiSize * 0.86)
   const openaiRect: Rect = {
-    x: Math.round(openaiBaseX + (openaiInwardX - openaiBaseX) * narrowLogoT),
+    x: leftRegion.x - Math.round(openaiSize * 0.3),
     y: pageHeight - gutter - openaiSize + Math.round(openaiSize * 0.2),
     width: openaiSize,
     height: openaiSize,
   }
 
   const claudeRect: Rect = {
-    x: pageWidth - Math.round(claudeSize * 0.94),
-    y: Math.round(claudeSize * 0.012),
+    x: pageWidth - Math.round(claudeSize * 0.69),
+    y: -Math.round(claudeSize * 0.22),
     width: claudeSize,
     height: claudeSize,
   }
@@ -741,7 +461,7 @@ function buildLayout(pageWidth: number, pageHeight: number, lineHeight: number):
     gutter,
     headlineTop,
     headlineWidth,
-    headlineFontSize,
+    headlineFont,
     headlineLineHeight,
     headlineLines,
     headlineRects,
@@ -754,7 +474,7 @@ function buildLayout(pageWidth: number, pageHeight: number, lineHeight: number):
 }
 
 async function evaluateLayout(
-  layout: ReturnType<typeof buildLayout>,
+  layout: PageLayout,
   lineHeight: number,
   preparedBody: PreparedTextWithSegments,
 ): Promise<{
@@ -763,68 +483,30 @@ async function evaluateLayout(
 }> {
   const [openaiHull, claudeHull] = await Promise.all([
     getWrapHull(domCache.openaiLogo.src, { smoothRadius: 6, mode: 'mean' }),
-    getWrapHull(domCache.claudeLogo.src, { smoothRadius: 24, mode: 'envelope', convexify: true }),
+    getWrapHull(domCache.claudeLogo.src, { smoothRadius: 6, mode: 'mean' }),
   ])
   const openaiWrap = transformWrapPoints(openaiHull, layout.openaiRect, openaiAngle)
-  const claudeWrapRect: Rect = {
-    x: layout.claudeRect.x - Math.round(layout.claudeRect.width * 0.045),
-    y: layout.claudeRect.y - Math.round(layout.claudeRect.height * 0.045),
-    width: Math.round(layout.claudeRect.width * 1.08),
-    height: Math.round(layout.claudeRect.height * 1.08),
-  }
-  const claudeCapRect: Rect = {
-    x: layout.claudeRect.x - Math.round(layout.claudeRect.width * 0.015),
-    y: layout.claudeRect.y + Math.round(layout.claudeRect.height * 0.09),
-    width: Math.round(layout.claudeRect.width * 0.92),
-    height: Math.round(layout.claudeRect.height * 0.16),
-  }
-  const claudeWrap = transformWrapPoints(claudeHull, claudeWrapRect, claudeAngle)
+  const claudeWrap = transformWrapPoints(claudeHull, layout.claudeRect, claudeAngle)
 
   const openaiObstacle: BandObstacle = {
-    getIntervals(bandTop, bandBottom) {
-      const interval = getPolygonIntervalForBand(
-        openaiWrap,
-        bandTop,
-        bandBottom,
-        Math.round(lineHeight * 0.82),
-        Math.round(lineHeight * 0.26),
-      )
-      return interval === null ? [] : [interval]
-    },
+    kind: 'polygon',
+    points: openaiWrap,
+    horizontalPadding: Math.round(lineHeight * 0.82),
+    verticalPadding: Math.round(lineHeight * 0.26),
   }
 
   const claudeObstacle: BandObstacle = {
-    getIntervals(bandTop, bandBottom) {
-      const intervals: Interval[] = []
-      const interval = getPolygonIntervalForBand(
-        claudeWrap,
-        bandTop,
-        bandBottom,
-        Math.round(lineHeight * 0.92),
-        Math.round(lineHeight * 0.48),
-      )
-      if (interval !== null) intervals.push(interval)
-      intervals.push(...getRectIntervalsForBand(
-        [claudeCapRect],
-        bandTop,
-        bandBottom,
-        Math.round(lineHeight * 0.72),
-        Math.round(lineHeight * 0.38),
-      ))
-      return intervals
-    },
+    kind: 'polygon',
+    points: claudeWrap,
+    horizontalPadding: Math.round(lineHeight * 0.28),
+    verticalPadding: Math.round(lineHeight * 0.12),
   }
 
   const titleObstacle: BandObstacle = {
-    getIntervals(bandTop, bandBottom) {
-      return getRectIntervalsForBand(
-        layout.headlineRects,
-        bandTop,
-        bandBottom,
-        Math.round(lineHeight * 0.95),
-        Math.round(lineHeight * 0.3),
-      )
-    },
+    kind: 'rects',
+    rects: layout.headlineRects,
+    horizontalPadding: Math.round(lineHeight * 0.95),
+    verticalPadding: Math.round(lineHeight * 0.3),
   }
 
   const leftResult = layoutColumn(
