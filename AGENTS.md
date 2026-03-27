@@ -1,6 +1,6 @@
 ## Pretext
 
-Internal notes for contributors and agents. Use `README.md` as the public source of truth for API examples and user-facing limitations. Use `STATUS.md` for the compact current browser-accuracy / benchmark dashboard, `accuracy/chrome.json` / `accuracy/safari.json` / `accuracy/firefox.json` for the checked-in raw browser accuracy rows, `benchmarks/chrome.json` and `benchmarks/safari.json` for the checked-in current benchmark snapshots, `corpora/STATUS.md` for the compact corpus snapshot, `corpora/representative.json` for the current machine-readable representative corpus rows, `corpora/TAXONOMY.md` for the shared mismatch vocabulary, and `RESEARCH.md` for the detailed exploration log.
+Internal notes for contributors and agents. Use `README.md` as the public source of truth for API examples and user-facing limitations. Use `STATUS.md` for the compact current browser-accuracy / benchmark dashboard, `accuracy/chrome.json` / `accuracy/safari.json` / `accuracy/firefox.json` for the checked-in raw browser accuracy rows, `benchmarks/chrome.json` and `benchmarks/safari.json` for the checked-in current benchmark snapshots, `corpora/STATUS.md` for the compact corpus snapshot, `corpora/representative.json` for the current machine-readable representative corpus rows, `corpora/TAXONOMY.md` for the shared mismatch vocabulary, `RESEARCH.md` for the detailed exploration log, and `TODO.md` for the current priorities.
 
 ### Commands
 
@@ -58,8 +58,7 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 - `NBSP`-style glue should survive `prepare()` as visible content and prevent ordinary word-boundary wrapping; `ZWSP` should survive as a zero-width break opportunity.
 - Soft hyphens should stay invisible when unbroken, but if the engine chooses that break, the broken line should expose a visible trailing hyphen in `layoutWithLines()`.
 - If a soft hyphen wins the break, the rich line APIs should still expose the visible trailing `-` in `line.text`, even though the public line types do not currently carry a separate soft-hyphen metadata flag.
-- `layoutNextLine()` is the rich-path escape hatch for variable-width userland layout. Keep it semantically aligned with `layoutWithLines()`, but do not pull its extra bookkeeping into the hot `layout()` path.
-- `layoutNextLineRange()` stays internal for now. The public low-level surface should stay batch-first (`walkLineRanges()`) unless the streaming-only path proves materially better.
+- `layoutNextLine()` is the rich-path escape hatch for variable-width userland layout. It now hides its grapheme-cache bookkeeping again by internally splitting line stepping from text materialization. Keep that internal split semantically aligned with `layoutWithLines()`, but do not pull its extra bookkeeping into the hot `layout()` path.
 - Astral CJK ideographs, compatibility ideographs, and the later extension blocks must still hit the CJK path; do not rely on BMP-only `charCodeAt()` checks there.
 - Non-word, non-space segments are break opportunities, same as words.
 - CJK grapheme splitting plus kinsoku merging keeps prohibited punctuation attached to adjacent graphemes.
@@ -74,6 +73,7 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 - Accuracy pages and checkers are now expected to be green in all three installed browsers on fresh runs; if a page disagrees, suspect stale tabs/servers before changing the algorithm.
 - The browser automation lock is self-healing for stale dead-owner files now, but it is still single-owner per browser. If a checker times out on the lock, confirm a live checker process still owns it before changing the algorithm.
 - Accuracy/corpus/Gatsby checkers can use background-safe browser automation, but benchmark runs should stay foreground. Do not “optimize away” benchmark focus; throttled/background tabs make the numbers less trustworthy.
+- For deep perf or memory work, prefer an isolated debuggable Chrome over a pure Bun microbenchmark. Bun is fine for quick hypotheses, but Chrome profiling is the better source of truth for CPU hotspots, allocation churn, and retained-heap checks.
 - Refresh `benchmarks/chrome.json` and `benchmarks/safari.json` when a diff changes benchmark methodology or the text engine hot path (`src/analysis.ts`, `src/measurement.ts`, `src/line-break.ts`, `src/layout.ts`, `src/bidi.ts`, or `pages/benchmark.ts`). `STATUS.md` should stay a compact dashboard, not the only source of current benchmark numbers.
 - `bun start` is the live human-facing dev server and now runs with `--watch` (full code reload). The scripted checkers intentionally keep using `--no-hmr` temporary servers so their runs stay deterministic and easy to tear down.
 - Do not run multiple browser corpus/sweep/font-matrix jobs in parallel against the same browser. The automation session and temporary page server paths interfere with each other and can make a healthy corpus look hung or flaky.
@@ -127,15 +127,3 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 ### Related
 
 - `../text-layout/` — Sebastian Markbage's original prototype + our experimental variants.
-
-### TODO
-- TweetDeck-style 3 columns of the same text scrolling at the same time
-- Resize Old Man and the Sea
-- Push the dynamic-layout demo toward richer editorial layouts instead of staying an isolated experiment
-- Revisit whitespace normalization only for the remaining NBSP / hard-space edge cases, not ordinary collapsible whitespace
-- Decide whether to add an explicit server canvas backend path now that `src/layout.ts` imports safely in non-DOM runtimes
-- Decide whether explicit hard line breaks / paragraph-aware layout belong in scope beyond the current `white-space: normal` collapsing model
-- Decide whether automatic hyphenation beyond manual soft-hyphen support is in scope for this repo
-- Decide whether intrinsic sizing / logical width APIs are needed beyond fixed-width height prediction
-- Decide whether bidi rendering strategy work (selection / copy-paste preserving runs) belongs here or stays out of scope
-- Decide whether richer text-engine features like ellipsis, per-character offsets, custom selection, vertical text, or shape wrapping should remain explicitly out of scope

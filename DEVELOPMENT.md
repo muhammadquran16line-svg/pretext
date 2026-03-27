@@ -37,6 +37,41 @@ See:
 - [corpora/representative.json](corpora/representative.json) for the compact machine-readable corpus anchor rows
 - [pages/benchmark.ts](pages/benchmark.ts) for the live benchmark harness
 
+## Deep Profiling
+
+For one-off performance and memory investigations, stay in a real browser first.
+
+Preferred workflow:
+
+1. Start the normal page server with `bun start`.
+2. Launch an isolated Chrome with:
+   - `--remote-debugging-port=9222`
+   - a throwaway `--user-data-dir`
+   - background-throttling disabled if the run is interactive
+3. Connect over Chrome DevTools / CDP.
+4. Use a tiny dedicated repro page before profiling the full benchmark page.
+5. Ask the questions in this order:
+   - Is this a benchmark regression?
+   - Where is the CPU time going?
+   - Is this allocation churn?
+   - Is anything still retained after GC?
+
+Use the right tool for each question:
+
+- Throughput / regression:
+  - [pages/benchmark.ts](pages/benchmark.ts)
+  - or a tiny dedicated stress page when the issue is narrower than the whole benchmark harness
+- CPU hotspots:
+  - Chrome CPU profiler / performance trace
+- Allocation churn:
+  - Chrome heap sampling during the workload
+- Retained memory:
+  - force GC, take a before heapsnapshot, run the workload, force GC again, take an after heapsnapshot, and diff what survives
+
+For this repo, that distinction matters. A page can allocate heavily without leaking. We now have a concrete example in the rich streaming path: long breakable segments caused real CPU + allocation churn, but essentially no retained post-GC heap growth.
+
+A pure Bun/Node microbenchmark is still useful for quick hypothesis checks, but treat it as the cheap first pass, not the final answer. When the question is "how does Pretext behave in the browser we actually care about?", prefer the browser workflow above.
+
 ## Accuracy
 
 Tested across 4 fonts × 8 sizes × 8 widths × 30 i18n texts (7680 tests):

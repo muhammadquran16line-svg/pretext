@@ -56,12 +56,15 @@ import {
 } from './measurement.ts'
 import {
   countPreparedLines,
-  layoutNextLineRange,
+  layoutNextLineRange as stepPreparedLineRange,
   walkPreparedLines,
   type InternalLayoutLine,
 } from './line-break.ts'
 
 let sharedGraphemeSegmenter: Intl.Segmenter | null = null
+// Rich-path only. Reuses grapheme splits while materializing multiple lines
+// from the same prepared handle, without pushing that cache into the API.
+let sharedLineTextCaches = new WeakMap<PreparedTextWithSegments, Map<number, string[]>>()
 
 function getSharedGraphemeSegmenter(): Intl.Segmenter {
   if (sharedGraphemeSegmenter === null) {
@@ -351,6 +354,28 @@ function getSegmentGraphemes(
   return graphemes
 }
 
+function getLineTextCache(prepared: PreparedTextWithSegments): Map<number, string[]> {
+  let cache = sharedLineTextCaches.get(prepared)
+  if (cache !== undefined) return cache
+
+  cache = new Map<number, string[]>()
+  sharedLineTextCaches.set(prepared, cache)
+  return cache
+}
+
+function lineHasDiscretionaryHyphen(
+  kinds: SegmentBreakKind[],
+  startSegmentIndex: number,
+  startGraphemeIndex: number,
+  endSegmentIndex: number,
+): boolean {
+  return (
+    endSegmentIndex > 0 &&
+    kinds[endSegmentIndex - 1] === 'soft-hyphen' &&
+    !(startSegmentIndex === endSegmentIndex && startGraphemeIndex > 0)
+  )
+}
+
 function buildLineTextFromRange(
   segments: string[],
   kinds: SegmentBreakKind[],
@@ -359,19 +384,17 @@ function buildLineTextFromRange(
   startGraphemeIndex: number,
   endSegmentIndex: number,
   endGraphemeIndex: number,
-  discretionaryHyphenBeforeSegmentIndex: number,
 ): string {
   let text = ''
-
-  function appendDiscretionaryHyphenBefore(segmentIndex: number): void {
-    if (discretionaryHyphenBeforeSegmentIndex === segmentIndex) {
-      text += '-'
-    }
-  }
+  const endsWithDiscretionaryHyphen = lineHasDiscretionaryHyphen(
+    kinds,
+    startSegmentIndex,
+    startGraphemeIndex,
+    endSegmentIndex,
+  )
 
   for (let i = startSegmentIndex; i < endSegmentIndex; i++) {
     if (kinds[i] === 'soft-hyphen') continue
-    appendDiscretionaryHyphenBefore(i)
     if (i === startSegmentIndex && startGraphemeIndex > 0) {
       text += getSegmentGraphemes(i, segments, cache).slice(startGraphemeIndex).join('')
     } else {
@@ -380,16 +403,47 @@ function buildLineTextFromRange(
   }
 
   if (endGraphemeIndex > 0) {
-    appendDiscretionaryHyphenBefore(endSegmentIndex)
+    if (endsWithDiscretionaryHyphen) text += '-'
     text += getSegmentGraphemes(endSegmentIndex, segments, cache).slice(
       startSegmentIndex === endSegmentIndex ? startGraphemeIndex : 0,
       endGraphemeIndex,
     ).join('')
-  } else if (discretionaryHyphenBeforeSegmentIndex === endSegmentIndex) {
+  } else if (endsWithDiscretionaryHyphen) {
     text += '-'
   }
 
   return text
+}
+
+function createLayoutLine(
+  prepared: PreparedTextWithSegments,
+  cache: Map<number, string[]>,
+  width: number,
+  startSegmentIndex: number,
+  startGraphemeIndex: number,
+  endSegmentIndex: number,
+  endGraphemeIndex: number,
+): LayoutLine {
+  return {
+    text: buildLineTextFromRange(
+      prepared.segments,
+      prepared.kinds,
+      cache,
+      startSegmentIndex,
+      startGraphemeIndex,
+      endSegmentIndex,
+      endGraphemeIndex,
+    ),
+    width,
+    start: {
+      segmentIndex: startSegmentIndex,
+      graphemeIndex: startGraphemeIndex,
+    },
+    end: {
+      segmentIndex: endSegmentIndex,
+      graphemeIndex: endGraphemeIndex,
+    },
+  }
 }
 
 function materializeLayoutLine(
@@ -397,27 +451,15 @@ function materializeLayoutLine(
   cache: Map<number, string[]>,
   line: InternalLayoutLine,
 ): LayoutLine {
-  return {
-    text: buildLineTextFromRange(
-      prepared.segments,
-      prepared.kinds,
-      cache,
-      line.startSegmentIndex,
-      line.startGraphemeIndex,
-      line.endSegmentIndex,
-      line.endGraphemeIndex,
-      line.discretionaryHyphenBeforeSegmentIndex,
-    ),
-    width: line.width,
-    start: {
-      segmentIndex: line.startSegmentIndex,
-      graphemeIndex: line.startGraphemeIndex,
-    },
-    end: {
-      segmentIndex: line.endSegmentIndex,
-      graphemeIndex: line.endGraphemeIndex,
-    },
-  }
+  return createLayoutLine(
+    prepared,
+    cache,
+    line.width,
+    line.startSegmentIndex,
+    line.startGraphemeIndex,
+    line.endSegmentIndex,
+    line.endGraphemeIndex,
+  )
 }
 
 function toLayoutLineRange(line: InternalLayoutLine): LayoutLineRange {
@@ -432,6 +474,31 @@ function toLayoutLineRange(line: InternalLayoutLine): LayoutLineRange {
       graphemeIndex: line.endGraphemeIndex,
     },
   }
+}
+
+function stepLineRange(
+  prepared: PreparedTextWithSegments,
+  start: LayoutCursor,
+  maxWidth: number,
+): LayoutLineRange | null {
+  const line = stepPreparedLineRange(prepared, start, maxWidth)
+  if (line === null) return null
+  return toLayoutLineRange(line)
+}
+
+function materializeLine(
+  prepared: PreparedTextWithSegments,
+  line: LayoutLineRange,
+): LayoutLine {
+  return createLayoutLine(
+    prepared,
+    getLineTextCache(prepared),
+    line.width,
+    line.start.segmentIndex,
+    line.start.graphemeIndex,
+    line.end.segmentIndex,
+    line.end.graphemeIndex,
+  )
 }
 
 // Batch low-level line geometry pass. This is the non-materializing counterpart
@@ -452,11 +519,10 @@ export function layoutNextLine(
   prepared: PreparedTextWithSegments,
   start: LayoutCursor,
   maxWidth: number,
-  graphemeCache: Map<number, string[]> = new Map<number, string[]>(),
 ): LayoutLine | null {
-  const line = layoutNextLineRange(prepared, start, maxWidth)
+  const line = stepLineRange(prepared, start, maxWidth)
   if (line === null) return null
-  return materializeLayoutLine(prepared, graphemeCache, line)
+  return materializeLine(prepared, line)
 }
 
 // Rich layout API for callers that want the actual line contents and widths.
@@ -467,7 +533,7 @@ export function layoutWithLines(prepared: PreparedTextWithSegments, maxWidth: nu
   const lines: LayoutLine[] = []
   if (prepared.widths.length === 0) return { lineCount: 0, height: 0, lines }
 
-  const graphemeCache = new Map<number, string[]>()
+  const graphemeCache = getLineTextCache(prepared)
   const lineCount = walkPreparedLines(getInternalPrepared(prepared), maxWidth, line => {
     lines.push(materializeLayoutLine(prepared, graphemeCache, line))
   })
@@ -478,6 +544,7 @@ export function layoutWithLines(prepared: PreparedTextWithSegments, maxWidth: nu
 export function clearCache(): void {
   clearAnalysisCaches()
   sharedGraphemeSegmenter = null
+  sharedLineTextCaches = new WeakMap<PreparedTextWithSegments, Map<number, string[]>>()
   clearMeasurementCaches()
 }
 

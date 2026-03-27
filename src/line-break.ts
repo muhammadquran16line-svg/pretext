@@ -19,11 +19,32 @@ export type InternalLayoutLine = {
   endSegmentIndex: number
   endGraphemeIndex: number
   width: number
-  discretionaryHyphenBeforeSegmentIndex: number
 }
 
 function isCollapsibleSpaceKind(kind: SegmentBreakKind): boolean {
   return kind === 'space'
+}
+
+function fitSoftHyphenBreak(
+  graphemeWidths: number[],
+  initialWidth: number,
+  maxWidth: number,
+  lineFitEpsilon: number,
+  discretionaryHyphenWidth: number,
+): { fitCount: number, fittedWidth: number } {
+  let fitCount = 0
+  let fittedWidth = initialWidth
+
+  while (fitCount < graphemeWidths.length) {
+    const nextWidth = fittedWidth + graphemeWidths[fitCount]!
+    const nextLineWidth =
+      fitCount + 1 < graphemeWidths.length ? nextWidth + discretionaryHyphenWidth : nextWidth
+    if (nextLineWidth > maxWidth + lineFitEpsilon) break
+    fittedWidth = nextWidth
+    fitCount++
+  }
+
+  return { fitCount, fittedWidth }
 }
 
 export function normalizeLineStart(
@@ -140,7 +161,6 @@ export function walkPreparedLines(
     endSegmentIndex = lineEndSegmentIndex,
     endGraphemeIndex = lineEndGraphemeIndex,
     width = lineW,
-    discretionaryHyphenBeforeSegmentIndex = -1,
   ): void {
     lineCount++
     onLine?.({
@@ -149,7 +169,6 @@ export function walkPreparedLines(
       endSegmentIndex,
       endGraphemeIndex,
       width,
-      discretionaryHyphenBeforeSegmentIndex,
     })
     lineW = 0
     hasContent = false
@@ -218,18 +237,13 @@ export function walkPreparedLines(
     const gWidths = breakableWidths[segmentIndex]!
     if (gWidths === null) return false
 
-    let fitCount = 0
-    let fittedWidth = lineW
-    while (fitCount < gWidths.length) {
-      const nextWidth = fittedWidth + gWidths[fitCount]!
-      const nextLineWidth = fitCount + 1 < gWidths.length
-        ? nextWidth + discretionaryHyphenWidth
-        : nextWidth
-      if (nextLineWidth > maxWidth + lineFitEpsilon) break
-      fittedWidth = nextWidth
-      fitCount++
-    }
-
+    const { fitCount, fittedWidth } = fitSoftHyphenBreak(
+      gWidths,
+      lineW,
+      maxWidth,
+      lineFitEpsilon,
+      discretionaryHyphenWidth,
+    )
     if (fitCount === 0) return false
 
     lineW = fittedWidth
@@ -243,7 +257,7 @@ export function walkPreparedLines(
       return true
     }
 
-    emitCurrentLine(segmentIndex, fitCount, fittedWidth + discretionaryHyphenWidth, segmentIndex)
+    emitCurrentLine(segmentIndex, fitCount, fittedWidth + discretionaryHyphenWidth)
     appendBreakableSegmentFrom(segmentIndex, fitCount)
     return true
   }
@@ -287,12 +301,7 @@ export function walkPreparedLines(
       }
 
       if (pendingSoftBreakSegmentIndex >= 0 && pendingSoftBreakWidth <= maxWidth + lineFitEpsilon) {
-        emitCurrentLine(
-          pendingSoftBreakSegmentIndex,
-          0,
-          pendingSoftBreakWidth,
-          pendingSoftBreakSegmentIndex,
-        )
+        emitCurrentLine(pendingSoftBreakSegmentIndex, 0, pendingSoftBreakWidth)
         if (w > maxWidth && breakableWidths[i] !== null) {
           appendBreakableSegment(i)
         } else {
@@ -355,7 +364,6 @@ export function layoutNextLineRange(
     endSegmentIndex = lineEndSegmentIndex,
     endGraphemeIndex = lineEndGraphemeIndex,
     width = lineW,
-    discretionaryHyphenBeforeSegmentIndex = -1,
   ): InternalLayoutLine | null {
     if (!hasContent) return null
 
@@ -365,7 +373,6 @@ export function layoutNextLineRange(
       endSegmentIndex,
       endGraphemeIndex,
       width,
-      discretionaryHyphenBeforeSegmentIndex,
     }
   }
 
@@ -424,16 +431,13 @@ export function layoutNextLineRange(
 
     const gWidths = breakableWidths[segmentIndex] ?? null
     if (gWidths !== null) {
-      let fitCount = 0
-      let fittedWidth = lineW
-      while (fitCount < gWidths.length) {
-        const nextWidth = fittedWidth + gWidths[fitCount]!
-        const nextLineWidth =
-          fitCount + 1 < gWidths.length ? nextWidth + discretionaryHyphenWidth : nextWidth
-        if (nextLineWidth > maxWidth + lineFitEpsilon) break
-        fittedWidth = nextWidth
-        fitCount++
-      }
+      const { fitCount, fittedWidth } = fitSoftHyphenBreak(
+        gWidths,
+        lineW,
+        maxWidth,
+        lineFitEpsilon,
+        discretionaryHyphenWidth,
+      )
 
       if (fitCount === gWidths.length) {
         lineW = fittedWidth
@@ -444,17 +448,12 @@ export function layoutNextLineRange(
       }
 
       if (fitCount > 0) {
-        return finishLine(segmentIndex, fitCount, fittedWidth + discretionaryHyphenWidth, segmentIndex)
+        return finishLine(segmentIndex, fitCount, fittedWidth + discretionaryHyphenWidth)
       }
     }
 
     if (pendingSoftBreakWidth <= maxWidth + lineFitEpsilon) {
-      return finishLine(
-        pendingSoftBreakSegmentIndex,
-        0,
-        pendingSoftBreakWidth,
-        pendingSoftBreakSegmentIndex,
-      )
+      return finishLine(pendingSoftBreakSegmentIndex, 0, pendingSoftBreakWidth)
     }
 
     return null

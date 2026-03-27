@@ -94,7 +94,16 @@ beforeAll(async () => {
   Reflect.set(globalThis, 'OffscreenCanvas', TestOffscreenCanvas)
   const mod = await import('./layout.ts')
   const lineBreakMod = await import('./line-break.ts')
-  ;({ prepare, prepareWithSegments, layout, layoutWithLines, layoutNextLine, walkLineRanges, clearCache, setLocale } = mod)
+  ;({
+    prepare,
+    prepareWithSegments,
+    layout,
+    layoutWithLines,
+    layoutNextLine,
+    walkLineRanges,
+    clearCache,
+    setLocale,
+  } = mod)
   ;({ countPreparedLines, walkPreparedLines } = lineBreakMod)
 })
 
