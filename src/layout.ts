@@ -42,6 +42,7 @@ import {
   kinsokuStart,
   leftStickyPunctuation,
   setAnalysisLocale,
+  type AnalysisChunk,
   type SegmentBreakKind,
   type TextAnalysis,
   type WhiteSpaceMode,
@@ -81,11 +82,14 @@ declare const preparedTextBrand: unique symbol
 
 type PreparedCore = {
   widths: number[] // Segment widths, e.g. [42.5, 4.4, 37.2]
+  lineEndFitAdvances: number[] // Width contribution when a line ends after this segment
+  lineEndPaintAdvances: number[] // Painted width contribution when a line ends after this segment
   kinds: SegmentBreakKind[] // Break behavior per segment, e.g. ['text', 'space', 'text']
   segLevels: Int8Array | null // Rich-path bidi metadata for custom rendering; layout() never reads it
   breakableWidths: (number[] | null)[] // Grapheme widths for overflow-wrap segments, else null
   breakablePrefixWidths: (number[] | null)[] // Cumulative grapheme prefix widths for narrow browser-policy shims
   discretionaryHyphenWidth: number // Visible width added when a soft hyphen is chosen as the break
+  chunks: PreparedLineChunk[] // Precompiled hard-break chunks for line walking
 }
 
 // Keep the main prepared handle opaque so the public API does not accidentally
@@ -142,27 +146,39 @@ export type PrepareOptions = {
   whiteSpace?: WhiteSpaceMode
 }
 
+export type PreparedLineChunk = {
+  startSegmentIndex: number
+  endSegmentIndex: number
+  consumedEndSegmentIndex: number
+}
+
 // --- Public API ---
 
 function createEmptyPrepared(includeSegments: boolean): InternalPreparedText | PreparedTextWithSegments {
   if (includeSegments) {
     return {
       widths: [],
+      lineEndFitAdvances: [],
+      lineEndPaintAdvances: [],
       kinds: [],
       segLevels: null,
       breakableWidths: [],
       breakablePrefixWidths: [],
       discretionaryHyphenWidth: 0,
+      chunks: [],
       segments: [],
     } as unknown as PreparedTextWithSegments
   }
   return {
     widths: [],
+    lineEndFitAdvances: [],
+    lineEndPaintAdvances: [],
     kinds: [],
     segLevels: null,
     breakableWidths: [],
     breakablePrefixWidths: [],
     discretionaryHyphenWidth: 0,
+    chunks: [],
   } as unknown as InternalPreparedText
 }
 
@@ -182,21 +198,29 @@ function measureAnalysis(
   if (analysis.len === 0) return createEmptyPrepared(includeSegments)
 
   const widths: number[] = []
+  const lineEndFitAdvances: number[] = []
+  const lineEndPaintAdvances: number[] = []
   const kinds: SegmentBreakKind[] = []
   const segStarts = includeSegments ? [] as number[] : null
   const breakableWidths: (number[] | null)[] = []
   const breakablePrefixWidths: (number[] | null)[] = []
   const segments = includeSegments ? [] as string[] : null
+  const preparedStartByAnalysisIndex = Array.from<number>({ length: analysis.len })
+  const preparedEndByAnalysisIndex = Array.from<number>({ length: analysis.len })
 
   function pushMeasuredSegment(
     text: string,
     width: number,
+    lineEndFitAdvance: number,
+    lineEndPaintAdvance: number,
     kind: SegmentBreakKind,
     start: number,
     breakable: number[] | null,
     breakablePrefix: number[] | null,
   ): void {
     widths.push(width)
+    lineEndFitAdvances.push(lineEndFitAdvance)
+    lineEndPaintAdvances.push(lineEndPaintAdvance)
     kinds.push(kind)
     segStarts?.push(start)
     breakableWidths.push(breakable)
@@ -205,13 +229,30 @@ function measureAnalysis(
   }
 
   for (let mi = 0; mi < analysis.len; mi++) {
+    preparedStartByAnalysisIndex[mi] = widths.length
     const segText = analysis.texts[mi]!
     const segWordLike = analysis.isWordLike[mi]!
     const segKind = analysis.kinds[mi]!
     const segStart = analysis.starts[mi]!
 
-    if (segKind === 'soft-hyphen' || segKind === 'hard-break') {
-      pushMeasuredSegment(segText, 0, segKind, segStart, null, null)
+    if (segKind === 'soft-hyphen') {
+      pushMeasuredSegment(
+        segText,
+        0,
+        discretionaryHyphenWidth,
+        discretionaryHyphenWidth,
+        segKind,
+        segStart,
+        null,
+        null,
+      )
+      preparedEndByAnalysisIndex[mi] = widths.length
+      continue
+    }
+
+    if (segKind === 'hard-break') {
+      pushMeasuredSegment(segText, 0, 0, 0, segKind, segStart, null, null)
+      preparedEndByAnalysisIndex[mi] = widths.length
       continue
     }
 
@@ -244,7 +285,7 @@ function measureAnalysis(
 
         const unitMetrics = getSegmentMetrics(unitText, cache)
         const w = getCorrectedSegmentWidth(unitText, unitMetrics, emojiCorrection)
-        pushMeasuredSegment(unitText, w, 'text', segStart + unitStart, null, null)
+        pushMeasuredSegment(unitText, w, w, w, 'text', segStart + unitStart, null, null)
 
         unitText = grapheme
         unitStart = gs.index
@@ -253,27 +294,107 @@ function measureAnalysis(
       if (unitText.length > 0) {
         const unitMetrics = getSegmentMetrics(unitText, cache)
         const w = getCorrectedSegmentWidth(unitText, unitMetrics, emojiCorrection)
-        pushMeasuredSegment(unitText, w, 'text', segStart + unitStart, null, null)
+        pushMeasuredSegment(unitText, w, w, w, 'text', segStart + unitStart, null, null)
       }
+      preparedEndByAnalysisIndex[mi] = widths.length
       continue
     }
 
     const w = getCorrectedSegmentWidth(segText, segMetrics, emojiCorrection)
+    const lineEndFitAdvance =
+      segKind === 'space' || segKind === 'preserved-space' || segKind === 'zero-width-break'
+        ? 0
+        : w
+    const lineEndPaintAdvance =
+      segKind === 'space' || segKind === 'zero-width-break'
+        ? 0
+        : w
 
     if (segWordLike && segText.length > 1) {
       const graphemeWidths = getSegmentGraphemeWidths(segText, segMetrics, cache, emojiCorrection)
       const graphemePrefixWidths = getSegmentGraphemePrefixWidths(segText, segMetrics, cache, emojiCorrection)
-      pushMeasuredSegment(segText, w, segKind, segStart, graphemeWidths, graphemePrefixWidths)
+      pushMeasuredSegment(
+        segText,
+        w,
+        lineEndFitAdvance,
+        lineEndPaintAdvance,
+        segKind,
+        segStart,
+        graphemeWidths,
+        graphemePrefixWidths,
+      )
     } else {
-      pushMeasuredSegment(segText, w, segKind, segStart, null, null)
+      pushMeasuredSegment(
+        segText,
+        w,
+        lineEndFitAdvance,
+        lineEndPaintAdvance,
+        segKind,
+        segStart,
+        null,
+        null,
+      )
     }
+    preparedEndByAnalysisIndex[mi] = widths.length
   }
 
+  const chunks = mapAnalysisChunksToPreparedChunks(analysis.chunks, preparedStartByAnalysisIndex, preparedEndByAnalysisIndex)
   const segLevels = segStarts === null ? null : computeSegmentLevels(analysis.normalized, segStarts)
   if (segments !== null) {
-    return { widths, kinds, segLevels, breakableWidths, breakablePrefixWidths, discretionaryHyphenWidth, segments } as unknown as PreparedTextWithSegments
+    return {
+      widths,
+      lineEndFitAdvances,
+      lineEndPaintAdvances,
+      kinds,
+      segLevels,
+      breakableWidths,
+      breakablePrefixWidths,
+      discretionaryHyphenWidth,
+      chunks,
+      segments,
+    } as unknown as PreparedTextWithSegments
   }
-  return { widths, kinds, segLevels, breakableWidths, breakablePrefixWidths, discretionaryHyphenWidth } as unknown as InternalPreparedText
+  return {
+    widths,
+    lineEndFitAdvances,
+    lineEndPaintAdvances,
+    kinds,
+    segLevels,
+    breakableWidths,
+    breakablePrefixWidths,
+    discretionaryHyphenWidth,
+    chunks,
+  } as unknown as InternalPreparedText
+}
+
+function mapAnalysisChunksToPreparedChunks(
+  chunks: AnalysisChunk[],
+  preparedStartByAnalysisIndex: number[],
+  preparedEndByAnalysisIndex: number[],
+): PreparedLineChunk[] {
+  const preparedChunks: PreparedLineChunk[] = []
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!
+    const startSegmentIndex =
+      chunk.startSegmentIndex < preparedStartByAnalysisIndex.length
+        ? preparedStartByAnalysisIndex[chunk.startSegmentIndex]!
+        : preparedEndByAnalysisIndex[preparedEndByAnalysisIndex.length - 1] ?? 0
+    const endSegmentIndex =
+      chunk.endSegmentIndex < preparedStartByAnalysisIndex.length
+        ? preparedStartByAnalysisIndex[chunk.endSegmentIndex]!
+        : preparedEndByAnalysisIndex[preparedEndByAnalysisIndex.length - 1] ?? 0
+    const consumedEndSegmentIndex =
+      chunk.consumedEndSegmentIndex < preparedStartByAnalysisIndex.length
+        ? preparedStartByAnalysisIndex[chunk.consumedEndSegmentIndex]!
+        : preparedEndByAnalysisIndex[preparedEndByAnalysisIndex.length - 1] ?? 0
+
+    preparedChunks.push({
+      startSegmentIndex,
+      endSegmentIndex,
+      consumedEndSegmentIndex,
+    })
+  }
+  return preparedChunks
 }
 
 function prepareInternal(

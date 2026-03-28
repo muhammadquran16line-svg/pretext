@@ -181,7 +181,7 @@ For editor-style input, the smallest honest second mode was not “stop normaliz
 - consecutive hard breaks should keep empty lines
 - a trailing hard break should **not** invent an extra empty line
 
-That led to a viable second mode: `{ whiteSpace: 'preserve-spaces' }`, which preserves ordinary spaces and `\n` hard breaks while leaving the default `white-space: normal` path untouched.
+That led to a viable second mode: `{ whiteSpace: 'pre-wrap' }`, which preserves ordinary spaces and `\n` hard breaks while leaving the default `white-space: normal` path untouched.
 
 One tempting broader claim was rejected. Tabs are **not** solved by the current canvas architecture:
 
@@ -189,6 +189,8 @@ One tempting broader claim was rejected. Tabs are **not** solved by the current 
 - Chrome canvas `measureText('\\t')`: `4.45px`
 
 So this mode currently normalizes tabs to ordinary spaces rather than pretending it is a full `pre-wrap` clone. That keeps the useful user-input case without quietly shipping a known measurement lie.
+
+One tooling caveat also showed up during validation: Safari `Range`-based probe extraction is less trustworthy for `pre-wrap` cases with preserved spaces or hard breaks. The height/line-count checks stayed exact, but the extracted line offsets could drift. For this mode, the span-based probe view was the better cross-check.
 
 ## Discovery: emoji canvas/DOM width discrepancy
 

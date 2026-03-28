@@ -19,7 +19,7 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 - `bun run corpus-taxonomy --id=... 300 450 600` — classify current mismatches by rough steering bucket (`edge-fit`, `glue-policy`, `boundary-discovery`, `shaping-context`, etc.) using the full browser diagnostics
 - `bun run gatsby-check` / `:safari` — Gatsby canary diagnostics
 - `bun run gatsby-sweep --start=300 --end=900 --step=10` — fast Gatsby width sweep; add `--diagnose` to rerun mismatching widths through the slow checker
-- `bun run probe-check --text='...' --width=320 --font='20px ...' --dir=rtl --lang=ar --method=range|span` — isolate a single snippet in the real browser and choose the browser-line extraction method explicitly
+- `bun run probe-check --text='...' --width=320 --font='20px ...' --dir=rtl --lang=ar --method=range|span --whiteSpace=normal|pre-wrap` — isolate a single snippet in the real browser and choose the browser-line extraction method explicitly
 - `bun run corpus-check --id=mixed-app-text --diagnose --method=span|range 710` — compare corpus-line extraction methods directly when a mismatch may be diagnostic-tool sensitive
 
 ### Important files
@@ -69,7 +69,7 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 - Bidi levels now stay on the rich `prepareWithSegments()` path as custom-rendering metadata only. The opaque fast `prepare()` handle should not pay for bidi metadata that `layout()` does not consume, and line breaking itself does not read those levels.
 - A larger pure-TS Unicode stack like `text-shaper` is useful as reference material, especially for Unicode coverage and richer bidi metadata, but its runtime segmentation and greedy glyph-line breaker are not replacements for our browser-facing `Intl.Segmenter` + preprocessing + canvas-measurement model.
 - Supported CSS target is still the common app-text configuration: `white-space: normal`, `word-break: normal`, `overflow-wrap: break-word`, `line-break: auto`.
-- There is now a second explicit whitespace mode, `{ whiteSpace: 'preserve-spaces' }`, for ordinary spaces plus `\n` hard breaks. Treat it as editor/input-oriented, not a full tab-accurate `pre-wrap` clone.
+- There is now a second explicit whitespace mode, `{ whiteSpace: 'pre-wrap' }`, for ordinary spaces plus `\n` hard breaks. Treat it as editor/input-oriented, not a full tab-accurate `pre-wrap` clone.
 - That default target means narrow widths may still break inside words, but only at grapheme boundaries. Keep the core engine honest to that behavior; if an editorial page wants stricter whole-word handling, layer it on top in userland instead of quietly changing the library default.
 - `system-ui` is unsafe for accuracy; canvas and DOM can resolve different fonts on macOS.
 - Thai historically mismatched because CSS and `Intl.Segmenter` use different internal dictionaries; keep it in the browser sweep when changing segmentation rules.
@@ -86,6 +86,7 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 - For Gatsby canary work, sweep widths cheaply first and only diagnose the mismatching widths in detail. The slow detailed checker is for narrowing root causes, not for every width by default.
 - For Arabic corpus work, trust the RTL `Range`-based diagnostics over the old span-probe path. The remaining misses are currently more about break policy than raw width sums.
 - For Arabic probe work, always use normalized corpus slices and the exact corpus font. Raw file offsets or a rough fallback font will mislead you.
+- For `pre-wrap` probe work, Safari span extraction is currently a better cross-check than Safari `Range` extraction around preserved spaces and hard breaks. Keep using `Range` for the default `white-space: normal` diagnostics unless the mode itself is the thing under test.
 - The corpus/probe diagnostic pages now compute our line offsets directly from prepared segments and grapheme fallbacks; do not go back to reconstructing them from `layoutWithLines().line.text.length`.
 - The Arabic corpus text has already been cleaned for quote-before-punctuation spacing artifacts like `" ،`, `" .`, and `" ؟`, plus a few obvious `space + punctuation` typos (`هيهات !`, `دجاك ؟!`, `القيان :`). Treat those as corpus hygiene, not engine behavior.
 - The repeated Arabic fine-width miss around `قوله:"...` was also a source-text issue; normalizing that one occurrence to `قوله: “...` removed several widths without touching the engine.
