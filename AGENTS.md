@@ -30,7 +30,6 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 - `src/measurement.ts` — canvas measurement runtime, segment metrics cache, emoji correction, and engine-profile shims
 - `src/line-break.ts` — internal line-walking core shared by the rich layout APIs and the hot-path line counter
 - `src/bidi.ts` — simplified bidi metadata helper for the rich `prepareWithSegments()` path
-- `src/measure-harfbuzz.ts` — HarfBuzz backend kept for ad hoc measurement probes
 - `src/test-data.ts` — shared corpus for browser accuracy pages/checkers and benchmarks
 - `src/layout.test.ts` — small durable invariant tests for the exported prepare/layout APIs
 - `pages/accuracy.ts` — browser sweep plus per-line diagnostics
@@ -72,7 +71,6 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 - Keep the permanent `pre-wrap` coverage small and explicit. A one-time raw-source validation was useful, but the standing repo coverage should stay a compact oracle set rather than a giant sweep over wiki scaffolding.
 - That default target means narrow widths may still break inside words, but only at grapheme boundaries. Keep the core engine honest to that behavior; if an editorial page wants stricter whole-word handling, layer it on top in userland instead of quietly changing the library default.
 - `system-ui` is unsafe for accuracy; canvas and DOM can resolve different fonts on macOS.
-- HarfBuzz probes need explicit LTR to avoid wrong direction on isolated Arabic words.
 - Accuracy pages and checkers are now expected to be green in all three installed browsers on fresh runs; if a page disagrees, suspect stale tabs/servers before changing the algorithm.
 - The browser automation lock is self-healing for stale dead-owner files now, but it is still single-owner per browser. If a checker times out on the lock, confirm a live checker process still owns it before changing the algorithm.
 - Accuracy/corpus/Gatsby checkers can use background-safe browser automation, but benchmark runs should stay foreground. Do not “optimize away” benchmark focus; throttled/background tabs make the numbers less trustworthy.

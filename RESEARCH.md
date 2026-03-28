@@ -144,27 +144,19 @@ What held up:
 
 This is now one of the small browser-profile shims that is actually justified.
 
-## Discovery: HarfBuzz guessSegmentProperties RTL bug
+## Retired HarfBuzz probe path
 
-For headless HarfBuzz probes, `guessSegmentProperties()` could assign RTL direction to isolated Arabic words and produce widths that did not match the browser.
+We briefly kept a headless HarfBuzz backend in the repo for server-side measurement probes.
 
-The keep was tiny:
-- set explicit LTR direction for the probe buffer
+What it taught us:
+- it was useful for research and algorithm probes
+- it was not close enough to our active browser-grounded path to justify keeping it in the main repo
+- isolated Arabic words in that probe path needed explicit LTR direction to avoid misleading widths
 
-This was a headless probe issue, not a browser-runtime issue.
-
-## Server-side measurement comparison
-
-We tried a few server-side engines:
-- `@napi-rs/canvas`
-- `opentype.js`
-- `harfbuzzjs`
-
-Useful conclusion:
-- they are useful for algorithm probes and research
-- they do not match browser rendering closely enough to replace browser-grounded measurement
-
-So server-side measurement remains possible in principle, but not a zero-config parity path.
+So if HarfBuzz comes up again later, treat it as explored territory:
+- useful as a research reference
+- not the runtime direction for Pretext
+- not a substitute for browser-oracle or browser-canvas validation
 
 ## Final browser sweep closure
 
