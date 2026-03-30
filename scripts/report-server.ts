@@ -3,7 +3,7 @@ import { getAvailablePort } from './browser-automation.ts'
 
 export async function startPostedReportServer<T extends { requestId?: string }>(expectedRequestId: string): Promise<{
   endpoint: string
-  waitForReport: (timeoutMs?: number) => Promise<T>
+  waitForReport: (timeoutMs?: number | null) => Promise<T>
   close: () => void
 }> {
   const port = await getAvailablePort()
@@ -56,7 +56,10 @@ export async function startPostedReportServer<T extends { requestId?: string }>(
 
   return {
     endpoint: `http://127.0.0.1:${port}/report`,
-    async waitForReport(timeoutMs = 120_000): Promise<T> {
+    async waitForReport(timeoutMs: number | null = 120_000): Promise<T> {
+      if (timeoutMs === null) {
+        return await reportPromise
+      }
       return await new Promise<T>((resolve, reject) => {
         const timer = setTimeout(() => {
           reject(new Error('Timed out waiting for posted report'))

@@ -5,6 +5,7 @@ import {
   createBrowserSession,
   ensurePageServer,
   getAvailablePort,
+  loadPostedReport,
   type BrowserKind,
 } from './browser-automation.ts'
 import { startPostedReportServer } from './report-server.ts'
@@ -264,8 +265,14 @@ try {
 
     const report = await (async () => {
       try {
-        await session.navigate(url)
-        return await reportServer.waitForReport(options.timeoutMs)
+        return await loadPostedReport(
+          session,
+          url,
+          () => reportServer.waitForReport(null),
+          requestId,
+          options.browser,
+          options.timeoutMs,
+        )
       } finally {
         reportServer.close()
       }

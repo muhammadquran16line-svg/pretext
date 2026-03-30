@@ -11,7 +11,7 @@ import {
   measureCanvasTextWidth,
   measureDomTextWidth,
 } from './diagnostic-utils.ts'
-import { clearNavigationReport, publishNavigationReport } from './report-utils.ts'
+import { clearNavigationReport, publishNavigationPhase, publishNavigationReport } from './report-utils.ts'
 
 type ProbeLine = {
   text: string
@@ -413,6 +413,7 @@ function getFirstBreakMismatch(
 
 function init(): void {
   try {
+    publishNavigationPhase('measuring', requestId)
     document.title = 'Pretext — Text Probe'
     document.documentElement.lang = lang
     document.documentElement.dir = direction
@@ -488,6 +489,7 @@ function init(): void {
 
 window.__PROBE_REPORT__ = withRequestId({ status: 'error', message: 'Pending initial layout' })
 clearNavigationReport()
+publishNavigationPhase('loading', requestId)
 if ('fonts' in document) {
   void document.fonts.ready.then(init)
 } else {

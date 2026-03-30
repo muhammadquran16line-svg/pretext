@@ -8,6 +8,7 @@ import {
   ensurePageServer,
   getAvailablePort,
   loadHashReport,
+  loadPostedReport,
   type BrowserKind,
 } from './browser-automation.ts'
 import { startPostedReportServer } from './report-server.ts'
@@ -220,8 +221,14 @@ try {
           `${baseUrl}?report=1&requestId=${requestId}` +
           `&full=1` +
           `&reportEndpoint=${encodeURIComponent(reportServer.endpoint)}`
-        await session.navigate(url)
-        report = await reportServer.waitForReport(reportTimeoutMs)
+        report = await loadPostedReport(
+          session,
+          url,
+          () => reportServer.waitForReport(null),
+          requestId,
+          browser,
+          reportTimeoutMs,
+        )
       } finally {
         session.close()
       }

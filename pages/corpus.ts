@@ -11,7 +11,7 @@ import {
   measureCanvasTextWidth,
   measureDomTextWidth,
 } from './diagnostic-utils.ts'
-import { clearNavigationReport, publishNavigationReport } from './report-utils.ts'
+import { clearNavigationReport, publishNavigationPhase, publishNavigationReport } from './report-utils.ts'
 import sourcesData from '../corpora/sources.json' with { type: 'json' }
 import arAlBukhala from '../corpora/ar-al-bukhala.txt' with { type: 'text' }
 import arRisalatAlGhufranPart1 from '../corpora/ar-risalat-al-ghufran-part-1.txt' with { type: 'text' }
@@ -600,15 +600,22 @@ function getFirstBreakMismatch(
 
 function setReport(report: CorpusReport): void {
   window.__CORPUS_REPORT__ = report
-  publishNavigationReport(toNavigationReport(report))
   if (reportEndpoint !== null) {
-    void fetch(reportEndpoint, {
-      method: 'POST',
-      body: JSON.stringify(report),
-    }).catch(() => {
-      // Best-effort side channel for larger sweep reports.
-    })
+    publishNavigationPhase('posting', requestId)
+    void (async () => {
+      try {
+        await fetch(reportEndpoint, {
+          method: 'POST',
+          body: JSON.stringify(report),
+        })
+        publishNavigationReport(toNavigationReport(report))
+      } catch {
+        // Best-effort side channel for larger sweep reports.
+      }
+    })()
+    return
   }
+  publishNavigationReport(toNavigationReport(report))
 }
 
 function setError(message: string): void {
@@ -1022,6 +1029,7 @@ async function loadCorpus(meta: CorpusMeta): Promise<void> {
     await document.fonts.ready
   }
 
+  publishNavigationPhase('measuring', requestId)
   const fullPrepared = prepareWithSegments(rawText, font)
   const fullNormalizedText = fullPrepared.segments.join('')
   const requestedSlice = getRequestedSlice(fullNormalizedText.length)
@@ -1082,6 +1090,7 @@ select.addEventListener('change', () => {
 window.__CORPUS_REPORT__ = withRequestId({ status: 'error', message: 'Pending initial layout' })
 stats.textContent = 'Loading...'
 clearNavigationReport()
+publishNavigationPhase('loading', requestId)
 
 async function init(): Promise<void> {
   try {

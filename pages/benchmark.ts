@@ -10,7 +10,11 @@ import {
 } from '../src/layout.ts'
 import type { PreparedText, PreparedTextWithSegments } from '../src/layout.ts'
 import { TEXTS } from '../src/test-data.ts'
-import { clearNavigationReport, publishNavigationReport as publishHashReport } from './report-utils.ts'
+import {
+  clearNavigationReport,
+  publishNavigationPhase,
+  publishNavigationReport as publishHashReport,
+} from './report-utils.ts'
 import arRisalatAlGhufranPart1 from '../corpora/ar-risalat-al-ghufran-part-1.txt' with { type: 'text' }
 import hiEidgah from '../corpora/hi-eidgah.txt' with { type: 'text' }
 import jaKumoNoIto from '../corpora/ja-kumo-no-ito.txt' with { type: 'text' }
@@ -397,6 +401,7 @@ async function run() {
   const root = document.getElementById('root')!
   window.__BENCHMARK_REPORT__ = withRequestId({ status: 'error', message: 'Pending benchmark run' })
   clearNavigationReport()
+  publishNavigationPhase('loading', requestId)
 
   let topLayoutSink = 0
   let scalingLayoutSink = 0
@@ -431,6 +436,7 @@ async function run() {
 
   const results: BenchmarkResult[] = []
   const richTexts = texts.slice(0, RICH_COUNT)
+  publishNavigationPhase('measuring', requestId)
 
   // --- 1. prepare() ---
   root.innerHTML = '<p>Benchmarking prepare()...</p>'

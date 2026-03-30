@@ -5,6 +5,7 @@ import {
   createBrowserSession,
   ensurePageServer,
   getAvailablePort,
+  loadPostedReport,
   type BrowserKind,
 } from './browser-automation.ts'
 import { startPostedReportServer } from './report-server.ts'
@@ -272,13 +273,18 @@ try {
     `&requestId=${requestId}` +
     `&reportEndpoint=${encodeURIComponent(reportServer.endpoint)}`
 
-  const report = await (async () => {
-    try {
-      await session.navigate(url)
-      return await reportServer.waitForReport()
-    } finally {
-      reportServer.close()
-    }
+    const report = await (async () => {
+      try {
+        return await loadPostedReport(
+          session,
+          url,
+          () => reportServer.waitForReport(null),
+          requestId,
+          options.browser,
+        )
+      } finally {
+        reportServer.close()
+      }
   })()
 
   if (report.status === 'error') {

@@ -3,6 +3,7 @@ import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writ
 import { createConnection, createServer as createNetServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { readNavigationPhaseState, readNavigationReportText, type NavigationPhase } from '../shared/navigation-state.ts'
 
 export type BrowserKind = 'chrome' | 'safari' | 'firefox'
 export type AutomationBrowserKind = BrowserKind
@@ -11,7 +12,7 @@ type MaybePromise<T> = T | Promise<T>
 
 export type BrowserSession = {
   navigate: (url: string) => MaybePromise<void>
-  readReportText: () => MaybePromise<string>
+  readLocationUrl: () => MaybePromise<string>
   close: () => void
 }
 
@@ -209,10 +210,28 @@ async function resolveBaseUrl(port: number, pathname: string): Promise<string | 
   return null
 }
 
-function extractReportTextFromUrl(url: string): string {
-  const hashIndex = url.indexOf('#report=')
-  if (hashIndex === -1) return ''
-  return decodeURIComponent(url.slice(hashIndex + '#report='.length))
+function getTimeoutMessage(
+  browser: BrowserKind,
+  target: 'report' | 'posted report',
+  lastPhase: NavigationPhase | null,
+): string {
+  if (lastPhase === null) {
+    return `Timed out waiting for ${target} from ${browser}`
+  }
+  return `Timed out waiting for ${target} from ${browser} (last phase: ${lastPhase})`
+}
+
+async function readLastNavigationPhase(
+  session: BrowserSession,
+  expectedRequestId: string,
+): Promise<NavigationPhase | null> {
+  const currentUrl = await session.readLocationUrl()
+  const phaseState = readNavigationPhaseState(currentUrl)
+  if (phaseState === null) return null
+  if (phaseState.requestId !== undefined && phaseState.requestId !== expectedRequestId) {
+    return null
+  }
+  return phaseState.phase
 }
 
 type BidiResponse = {
@@ -372,14 +391,13 @@ function createSafariSession(_options: BrowserSessionOptions): BrowserSession {
         'end tell',
       ])
     },
-    readReportText() {
+    readLocationUrl() {
       try {
-        const url = runAppleScript([
+        return runAppleScript([
           'tell application "Safari"',
           `return URL of current tab of (first window whose id is ${windowId})`,
           'end tell',
         ])
-        return extractReportTextFromUrl(url)
       } catch {
         return ''
       }
@@ -432,15 +450,14 @@ function createChromeSession(options: BrowserSessionOptions): BrowserSession {
         'end tell',
       ])
     },
-    readReportText() {
+    readLocationUrl() {
       try {
-        const url = runAppleScript([
+        return runAppleScript([
           'tell application "Google Chrome"',
           `set targetWindow to first window whose id is ${windowId}`,
           `return URL of (first tab of targetWindow whose id is ${tabId})`,
           'end tell',
         ])
-        return extractReportTextFromUrl(url)
       } catch {
         return ''
       }
@@ -484,7 +501,7 @@ function createFirefoxSession(_options: BrowserSessionOptions): BrowserSession {
         throw new Error(navigate.message ?? navigate.error)
       }
     },
-    async readReportText() {
+    async readLocationUrl() {
       try {
         const state = await ensureState()
         const evaluation = await state.bidi.send('script.evaluate', {
@@ -496,7 +513,7 @@ function createFirefoxSession(_options: BrowserSessionOptions): BrowserSession {
         if (evaluation.error !== undefined) {
           return ''
         }
-        return extractReportTextFromUrl(getBidiStringValue(evaluation))
+        return getBidiStringValue(evaluation)
       } catch {
         return ''
       }
@@ -556,16 +573,78 @@ export async function loadHashReport<T extends { requestId?: string }>(
   await session.navigate(url)
 
   const attempts = Math.max(1, Math.ceil(timeoutMs / 100))
+  let lastPhase: NavigationPhase | null = null
   for (let i = 0; i < attempts; i++) {
     await sleep(100)
-    const reportJson = await session.readReportText()
+    const currentUrl = await session.readLocationUrl()
+    const reportJson = readNavigationReportText(currentUrl)
     if (reportJson === '' || reportJson === 'null') continue
 
     const report = JSON.parse(reportJson) as T
     if (report.requestId === expectedRequestId) {
       return report
     }
+
+    const phase = readNavigationPhaseState(currentUrl)
+    if (
+      phase !== null &&
+      (phase.requestId === undefined || phase.requestId === expectedRequestId)
+    ) {
+      lastPhase = phase.phase
+    }
   }
 
-  throw new Error(`Timed out waiting for report from ${browser}`)
+  if (lastPhase === null) {
+    lastPhase = await readLastNavigationPhase(session, expectedRequestId)
+  }
+  throw new Error(getTimeoutMessage(browser, 'report', lastPhase))
+}
+
+export async function loadPostedReport<T extends { requestId?: string }>(
+  session: BrowserSession,
+  url: string,
+  waitForReport: () => Promise<T>,
+  expectedRequestId: string,
+  browser: BrowserKind,
+  timeoutMs = 60_000,
+): Promise<T> {
+  await session.navigate(url)
+
+  let resolvedReport: T | null = null
+  let reportError: unknown = null
+
+  void waitForReport().then(
+    value => {
+      resolvedReport = value
+    },
+    error => {
+      reportError = error
+    },
+  )
+
+  const attempts = Math.max(1, Math.ceil(timeoutMs / 100))
+  let lastPhase: NavigationPhase | null = null
+  for (let i = 0; i < attempts; i++) {
+    await sleep(100)
+    if (resolvedReport !== null) {
+      return resolvedReport
+    }
+    if (reportError !== null) {
+      throw reportError
+    }
+
+    const phase = await readLastNavigationPhase(session, expectedRequestId)
+    if (phase !== null) {
+      lastPhase = phase
+    }
+  }
+
+  if (resolvedReport !== null) {
+    return resolvedReport
+  }
+  if (reportError !== null) {
+    throw reportError
+  }
+
+  throw new Error(getTimeoutMessage(browser, 'posted report', lastPhase))
 }

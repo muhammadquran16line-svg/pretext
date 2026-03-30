@@ -1,8 +1,21 @@
+import {
+  buildNavigationPhaseHash,
+  buildNavigationReportHash,
+  type NavigationPhase,
+} from '../shared/navigation-state.ts'
+
+function replaceNavigationHash(hash: string): void {
+  history.replaceState(null, '', `${location.pathname}${location.search}${hash}`)
+}
+
 export function clearNavigationReport(): void {
-  history.replaceState(null, '', `${location.pathname}${location.search}`)
+  replaceNavigationHash('')
+}
+
+export function publishNavigationPhase(phase: NavigationPhase, requestId?: string): void {
+  replaceNavigationHash(buildNavigationPhaseHash(phase, requestId))
 }
 
 export function publishNavigationReport(report: unknown): void {
-  const encoded = encodeURIComponent(JSON.stringify(report))
-  history.replaceState(null, '', `${location.pathname}${location.search}#report=${encoded}`)
+  replaceNavigationHash(buildNavigationReportHash(report))
 }

@@ -10,7 +10,11 @@ import {
   getLineContent,
   measureCanvasTextWidth,
 } from './diagnostic-utils.ts'
-import { clearNavigationReport, publishNavigationReport as publishHashReport } from './report-utils.ts'
+import {
+  clearNavigationReport,
+  publishNavigationPhase,
+  publishNavigationReport as publishHashReport,
+} from './report-utils.ts'
 
 const book = document.getElementById('book')!
 const slider = document.getElementById('slider') as HTMLInputElement
@@ -290,15 +294,22 @@ function publishNavigationReport(report: GatsbyReport): void {
 
 function setReport(report: GatsbyReport): void {
   window.__GATSBY_REPORT__ = report
-  publishNavigationReport(report)
   if (reportEndpoint !== null) {
-    void fetch(reportEndpoint, {
-      method: 'POST',
-      body: JSON.stringify(report),
-    }).catch(() => {
-      // Best-effort side channel for larger sweep reports.
-    })
+    publishNavigationPhase('posting', requestId)
+    void (async () => {
+      try {
+        await fetch(reportEndpoint, {
+          method: 'POST',
+          body: JSON.stringify(report),
+        })
+        publishNavigationReport(report)
+      } catch {
+        // Best-effort side channel for larger sweep reports.
+      }
+    })()
+    return
   }
+  publishNavigationReport(report)
 }
 
 function buildSegmentSpans(preparedText: PreparedTextWithSegments): SegmentSpan[] {
@@ -798,6 +809,7 @@ controlsEl.addEventListener('mousemove', (e) => {
 window.__GATSBY_REPORT__ = withRequestId({ status: 'error', message: 'Pending initial layout' })
 stats.textContent = 'Loading...'
 clearNavigationReport()
+publishNavigationPhase('loading', requestId)
 
 const initialWidth = parseInitialWidth()
 
@@ -806,6 +818,7 @@ async function init() {
     if ('fonts' in document) {
       await document.fonts.ready
     }
+    publishNavigationPhase('measuring', requestId)
     diagnosticCtx.font = FONT
     if (requestedWidths !== null) {
       runSweep(requestedWidths)
